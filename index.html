@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>돌도끼</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0b0a09; overflow: hidden; font-family: system-ui, sans-serif; }
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+
+  /* Backdrop: the same footage, cover-fit, heavily blurred and dimmed. It
+     is the room the axe floats in, so the film and the 3D scene share colour. */
+  #bg {
+    position: absolute; inset: -6%; width: 112%; height: 112%; object-fit: cover;
+    filter: blur(36px) brightness(.8) saturate(1.1);
+    transition: filter 1.8s ease, transform 6s ease-out;
+  }
+
+  /* Foreground film: contained at its native aspect, edges feathered into the backdrop. */
+  #film, #hand {
+    position: absolute; left: 50%; top: 50%;
+    height: min(92vh, 92vw * 376 / 356); aspect-ratio: 356 / 376;
+    transform: translate(-50%, -50%);
+    object-fit: cover; pointer-events: none;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent),
+                        linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+    -webkit-mask-composite: source-in;
+            mask-image: linear-gradient(to right, transparent, #000 12%, #000 88%, transparent),
+                        linear-gradient(to bottom, transparent, #000 12%, #000 88%, transparent);
+            mask-composite: intersect;
+    transition: opacity .9s ease, filter .9s ease;
+  }
+  /* Hand + arm cut out of the last frame. It sits ABOVE the 3D canvas so the
+     fingers stay in front of the axe while it is overlaid on the film. */
+  #hand { opacity: 0; transition: opacity .25s ease, filter .9s ease; }
+  #stage.axe-in #hand { opacity: 1; }
+  #stage.done #hand { opacity: 0; filter: blur(6px); transition: opacity .9s ease, filter .9s ease; }
+
+  /* Sky colours sampled from the last frame; fades in under the film so its
+     feathered edges melt into the same sky the axe then floats in. */
+  #sky { position: absolute; inset: 0; opacity: 0; transition: opacity .8s ease;
+    background: linear-gradient(to bottom, #c2e0f6 0%, #dbebf8 45%, #eeeeed 100%); }
+  #stage.axe-in #sky { opacity: 1; }
+  /* Film dissolves while drifting forward and softening, as if the lens racks focus onto the axe. */
+  #stage.done #film { opacity: 0; filter: blur(6px); }
+
+  /* The 3D viewer is already loaded and rendering (transparent canvas) underneath. */
+  /* The canvas starts pinned over the axe in the film (--tx/--ty/--rot/--s are measured
+     in JS), fades in on top of it, then glides to the centre once the film is gone. */
+  #canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab;
+    opacity: 0; transform: translate(var(--tx, 0), var(--ty, 0)) rotate(var(--rot, 0deg)) scale(var(--s, 1));
+    transition: opacity .7s ease;
+    pointer-events: none;
+  }
+  canvas.shs-dragging { cursor: grabbing; }
+  #stage.axe-in #canvas { opacity: 1; }
+  #stage.done #canvas { transform: none; pointer-events: auto;
+    transition: opacity .7s ease, transform 1.7s cubic-bezier(.65,0,.2,1) .35s; }
+
+  /* Soft vignette + ground shadow so the axe reads as floating. */
+  #vignette { position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 50%, transparent 50%, rgba(40,60,90,.18) 100%); }
+  #caption { position: absolute; left: 0; right: 0; bottom: max(28px, env(safe-area-inset-bottom)); text-align: center; color: #22303d;
+    pointer-events: none; opacity: 0; transform: translateY(8px); transition: opacity 1.2s ease 1.6s, transform 1.2s ease 1.6s; }
+  #caption h1 { margin: 0; font-weight: 600; font-size: clamp(20px, 3vw, 28px); letter-spacing: .08em; }
+  #caption p { margin: 6px 0 0; font-size: 13px; opacity: .6; }
+  #stage.done #caption { opacity: 1; transform: none; }
+
+  .btn { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 16px; z-index: 5; color: #f2ece4;
+    background: rgba(20,18,16,.45); border: 1px solid rgba(255,255,255,.25); border-radius: 999px; padding: 8px 14px;
+    font: 13px system-ui; cursor: pointer; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); transition: opacity .6s ease; }
+  .btn:hover { background: rgba(20,18,16,.7); }
+  #skip { right: auto; left: 16px; }
+  #stage.done #skip, #stage.done #sound { opacity: 0; pointer-events: none; }
+
+  /* Shown only while the bundle is still downloading after the film ends. */
+  #loading { position: absolute; left: 50%; bottom: 16%; transform: translateX(-50%); color: #f2ece4; font: 12px ui-monospace, monospace;
+    opacity: 0; transition: opacity .6s ease; pointer-events: none; }
+  #loading.on { opacity: .8; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="bg" src="assets/intro.mp4" muted playsinline preload="auto" aria-hidden="true"></video>
+  <div id="sky"></div>
+  <video id="film" src="assets/intro.mp4" muted playsinline preload="auto"></video>
+  <div id="vignette"></div>
+  <canvas id="canvas" aria-label="돌도끼 3D 모델"></canvas>
+  <img id="hand" src="assets/hand.png" alt="">
+  <div id="caption"><h1>돌도끼</h1><p>드래그하여 회전 · 스크롤하여 확대</p></div>
+  <button id="play" class="btn" type="button" hidden style="top:50%;left:50%;right:auto;transform:translate(-50%,-50%);padding:14px 26px;font-size:16px">▶ 재생</button>
+  <button id="skip" class="btn" type="button">건너뛰기</button>
+  <button id="sound" class="btn" type="button">소리 켜기</button>
+  <div id="loading">모델 불러오는 중…</div>
+</div>
+
+<script src="assets/viewer.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const stage = $('stage'), film = $('film'), bg = $('bg'), loading = $('loading');
+
+  // 1) Start loading the model immediately, in parallel with the film.
+  //    autoRotate is off so the axe is shown from its initial (front) view.
+  let modelReady = false, filmEnded = false, revealed = false;
+  const viewer = new Snap3dViewer($('canvas'), 'assets/stone_axe.snap3d', {
+    loadingIndicator: false,
+    autoRotate: false,
+    onReady: () => { axeBox = measureAxe(); modelReady = true; tryReveal(); },
+    onError: (e) => console.error(e),
+  });
+  window.viewer = viewer;
+  viewer.start();
+
+  // 2) Reveal only when BOTH the film is over and the model is rendered, so
+  //    the transition never lands on an empty canvas.
+  function tryReveal() {
+    if (revealed) return;
+    if (!filmEnded) return;
+    if (!modelReady) { loading.classList.add('on'); return; }
+    revealed = true;
+    loading.classList.remove('on');
+    placeOverFilmAxe();
+    viewer.requestRender();
+    // 1) 3D axe fades in exactly over the filmed one, 2) film dissolves and the
+    // axe glides to the centre.
+    requestAnimationFrame(() => requestAnimationFrame(() => stage.classList.add('axe-in')));
+    if (!/[?&]hold/.test(location.search)) setTimeout(() => stage.classList.add('done'), 700); // ?hold: stay on the overlap for tuning
+    setTimeout(() => film.pause(), 2500);
+    setTimeout(() => $('canvas').focus({ preventScroll: true }), 2200);
+  }
+
+  // Pose that lays the 3D axe over the filmed one in the last frame: where its
+  // centroid lands (fractions of the film box), its size (sqrt of area, as a
+  // fraction of film width) and the angle of its long axis (degrees, y down).
+  // Found by maximising overlap with a mask of the filmed axe, counting the
+  // part hidden by the fingers as free (the hand is drawn above the canvas).
+  const FILM_AXE = { x: 0.5228, y: 0.2485, size: 0.3466, angle: -131 };
+
+  // Centroid, size and long-axis angle of what the viewer drew (alpha > 0 =
+  // the axe), in CSS px / degrees, using the same definitions as FILM_AXE.
+  function measureAxe() {
+    viewer.renderFrame();
+    const gl = viewer.gl, W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    const px = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) {
+      if (px[(y * W + x) * 4 + 3] <= 8) continue;
+      const fy = H - y; // flip GL's bottom-up rows to y-down
+      n++; sx += x; sy += fy; sxx += x * x; syy += fy * fy; sxy += x * fy;
+    }
+    if (!n) return null;
+    const mx = sx / n, my = sy / n;
+    const cxx = sxx / n - mx * mx, cyy = syy / n - my * my, cxy = sxy / n - mx * my;
+    const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy) * 180 / Math.PI;
+    const k = $('canvas').clientWidth / W;
+    return { cx: mx * k, cy: my * k, size: Math.sqrt(n * 4) * k, angle };
+  }
+
+  function placeOverFilmAxe() {
+    const m = axeBox || measureAxe();
+    const c = $('canvas'), r = film.getBoundingClientRect();
+    if (!m) return;
+    const s = (FILM_AXE.size * r.width) / m.size;
+    // Smallest turn that aligns the long axes (they are only defined mod 180).
+    let rot = FILM_AXE.angle - m.angle;
+    rot = ((rot + 90) % 180 + 180) % 180 - 90;
+    const t = rot * Math.PI / 180, cos = Math.cos(t), sin = Math.sin(t);
+    const tx = r.left + FILM_AXE.x * r.width, ty = r.top + FILM_AXE.y * r.height;
+    const ox = c.clientWidth / 2, oy = c.clientHeight / 2;
+    const dx = m.cx - ox, dy = m.cy - oy;
+    c.style.setProperty('--s', s);
+    c.style.setProperty('--rot', rot + 'deg');
+    c.style.setProperty('--tx', (tx - ox - s * (cos * dx - sin * dy)) + 'px');
+    c.style.setProperty('--ty', (ty - oy - s * (sin * dx + cos * dy)) + 'px');
+    console.log('axe match', { measured: m, rot, scale: s });
+  }
+  let axeBox = null;
+
+  // 3) Film playback: bg copy mirrors the foreground.
+  const end = () => { filmEnded = true; tryReveal(); };
+  // Start the hand-over just before the last frame; the film then holds on it while the axe fades in.
+  film.addEventListener('timeupdate', () => {
+    if (film.duration && film.currentTime >= film.duration - 0.15) end();
+  });
+  film.addEventListener('ended', end);
+  film.addEventListener('play', () => { bg.currentTime = film.currentTime; bg.play().catch(() => {}); });
+  film.addEventListener('pause', () => { if (!film.ended) bg.pause(); });
+  film.addEventListener('seeked', () => { bg.currentTime = film.currentTime; });
+
+  // Autoplay blocked -> offer a play button; video broken -> go straight to the model.
+  const playBtn = $('play');
+  const start = () => film.play().then(() => playBtn.hidden = true).catch(() => { playBtn.hidden = false; });
+  playBtn.addEventListener('click', () => { playBtn.hidden = true; film.play().catch(end); });
+  film.addEventListener('error', end);
+  if (film.readyState >= 3) start(); else film.addEventListener('canplay', start, { once: true });
+
+  // Controls
+  const sound = $('sound');
+  sound.addEventListener('click', () => {
+    film.muted = !film.muted;
+    sound.textContent = film.muted ? '소리 켜기' : '소리 끄기';
+  });
+  $('skip').addEventListener('click', end);
+})();
+</script>
+</body>
+</html>
