@@ -196,7 +196,13 @@
   const start = () => film.play().then(() => playBtn.hidden = true).catch(() => { playBtn.hidden = false; });
   playBtn.addEventListener('click', () => { playBtn.hidden = true; film.play().catch(end); });
   film.addEventListener('error', end);
-  if (film.readyState >= 3) start(); else film.addEventListener('canplay', start, { once: true });
+  // Don't wait for 'canplay': mobile browsers ignore preload until playback is
+  // requested, so that event may never fire. Ask to play right away; if the
+  // browser refuses (or stalls), the button / any tap starts it.
+  start();
+  setTimeout(() => { if (film.paused && !film.ended) playBtn.hidden = false; }, 1500);
+  const tapStart = () => { if (film.paused && !film.ended) { playBtn.hidden = true; film.play().catch(end); } };
+  addEventListener('pointerdown', tapStart, { once: true });
 
   // Controls
   const sound = $('sound');
